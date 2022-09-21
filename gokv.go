@@ -3,6 +3,8 @@ package gokv
 import (
 	"sync"
 	"time"
+
+	uuid "github.com/satori/go.uuid"
 )
 
 type Value struct {
@@ -76,4 +78,29 @@ func (kv *KV) Put(k string, v interface{}, args ...interface{}) bool {
 	kv.m[k] = value
 
 	return true
+}
+
+func (kv *KV) PutWithUuid(v interface{}, args ...interface{}) (key string, ok bool) {
+	value := NewValue(v)
+	for i, v := range args {
+		switch i {
+		case 0:
+			ttl, ok := v.(int)
+			if !ok {
+				return "", false
+			}
+			value.Ttl = ttl
+		default:
+			return "", false
+		}
+	}
+
+	key = uuid.NewV4().String()
+
+	kv.mutex.Lock()
+	defer kv.mutex.Unlock()
+
+	kv.m[key] = value
+
+	return key, true
 }
