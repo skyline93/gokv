@@ -30,8 +30,8 @@ func (v *Value) IsExpired() bool {
 }
 
 type KV struct {
-	m     map[string]*Value
-	mutex sync.RWMutex
+	m map[string]*Value
+	sync.RWMutex
 }
 
 func New() *KV {
@@ -41,16 +41,19 @@ func New() *KV {
 }
 
 func (kv *KV) Get(k string) interface{} {
+	kv.RLock()
 	v, ok := kv.m[k]
+	kv.RUnlock()
+
 	if !ok {
 		return nil
 	}
 
 	if v.IsExpired() {
-		kv.mutex.Lock()
-		defer kv.mutex.Unlock()
-
+		kv.Lock()
 		delete(kv.m, k)
+		kv.Unlock()
+
 		return nil
 	}
 
@@ -72,8 +75,8 @@ func (kv *KV) Put(k string, v interface{}, args ...interface{}) bool {
 		}
 	}
 
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
+	kv.Lock()
+	defer kv.Unlock()
 
 	kv.m[k] = value
 
@@ -97,8 +100,8 @@ func (kv *KV) PutWithUuid(v interface{}, args ...interface{}) (key string, ok bo
 
 	key = uuid.NewV4().String()
 
-	kv.mutex.Lock()
-	defer kv.mutex.Unlock()
+	kv.Lock()
+	defer kv.Unlock()
 
 	kv.m[key] = value
 
