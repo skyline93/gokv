@@ -2,10 +2,11 @@ package gokv
 
 import (
 	"fmt"
-	uuid "github.com/satori/go.uuid"
 	"log"
 	"sync"
 	"time"
+
+	uuid "github.com/satori/go.uuid"
 )
 
 type Node struct {
@@ -244,4 +245,23 @@ func (c *Cache) Get(key string) interface{} {
 
 	c.reset(key)
 	return value.v
+}
+
+func (c *Cache) Update(key string, value interface{}) (ok bool) {
+	c.Lock()
+	defer c.Unlock()
+
+	v, ok := c.kv[key]
+	if !ok {
+		return false
+	}
+
+	if v.IsExpired() {
+		c.delete(key)
+		return false
+	}
+
+	v.v = value
+	c.reset(key)
+	return true
 }
