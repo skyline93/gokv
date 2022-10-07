@@ -1,57 +1,63 @@
-package gokv_test
+package gokv
 
 import (
 	"testing"
-
-	"github.com/skyline93/gokv"
+	"time"
 )
 
-func TestPutAndGet(t *testing.T) {
-	kv := gokv.New()
+func TestPut(t *testing.T) {
+	cache := New(3)
+	cache.Put("1", "a")
+	cache.Put("2", "b")
+	cache.Put("3", "c")
 
-	tests := []struct {
-		arg1     string
-		arg2     interface{}
-		expected interface{}
-	}{
-		{"key1", 123, 123},
-		{"key1", "123", "123"},
-		{"key2", struct{ v1 string }{"v1"}, struct{ v1 string }{"v1"}},
+	if v := cache.Get("1"); v != "a" {
+		t.FailNow()
 	}
 
-	for _, i := range tests {
-		if ok := kv.Put(i.arg1, i.arg2); !ok {
-			t.Fatal("put error")
-		}
+	if cache.index.tail.key != "1" {
+		t.FailNow()
+	}
 
-		output := kv.Get(i.arg1)
-		if output != i.expected {
-			t.Errorf("Output %q not equal to expected %q", output, i.expected)
-		}
+	if v := cache.Get("2"); v != "b" {
+		t.FailNow()
+	}
+
+	if cache.index.tail.key != "2" {
+		t.FailNow()
+	}
+
+	if v := cache.Get("3"); v != "c" {
+		t.FailNow()
+	}
+
+	cache.Put("4", "d")
+	if cache.index.head.key != "2" {
+		t.FailNow()
 	}
 }
 
-func TestPutWithUuidAndGet(t *testing.T) {
-	kv := gokv.New()
+func TestPutWithKey(t *testing.T) {
+	cache := New(2)
 
-	tests := []struct {
-		arg      interface{}
-		expected interface{}
-	}{
-		{123, 123},
-		{"123", "123"},
-		{struct{ v1 string }{"v1"}, struct{ v1 string }{"v1"}},
+	k := cache.PutWithKey("a")
+	if k == "" {
+		t.FailNow()
+	}
+}
+
+func TestTTL(t *testing.T) {
+	cache := New(2)
+
+	cache.Put("1", "a", 2)
+	time.Sleep(time.Second * 1)
+
+	if v := cache.Get("1"); v == nil {
+		t.FailNow()
 	}
 
-	for _, i := range tests {
-		k, ok := kv.PutWithUuid(i.arg)
-		if !ok {
-			t.Fatal("put error")
-		}
-
-		output := kv.Get(k)
-		if output != i.expected {
-			t.Errorf("Output %q not equal to expected %q", output, i.expected)
-		}
+	time.Sleep(time.Second * 1)
+	if v := cache.Get("1"); v != nil {
+		t.FailNow()
 	}
 }

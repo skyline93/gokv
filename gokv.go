@@ -1,109 +1,247 @@
 package gokv
 
 import (
+	"fmt"
+	uuid "github.com/satori/go.uuid"
+	"log"
 	"sync"
 	"time"
-
-	uuid "github.com/satori/go.uuid"
 )
 
+type Node struct {
+	next *Node
+	prev *Node
+
+	key interface{}
+}
+
+type List struct {
+	head *Node
+	tail *Node
+}
+
+func (l *List) Insert(key interface{}) {
+	node := &Node{key: key}
+
+	if l.head == nil {
+		l.head = node
+		l.tail = node
+		return
+	}
+
+	t := l.tail
+	t.next = node
+	node.prev = t
+	l.tail = node
+}
+
+func (l *List) get(key interface{}) *Node {
+	n := l.head
+
+	if n.key == key {
+		return n
+	}
+
+	for n.next != nil {
+		if n.key == key {
+			return n
+		}
+
+		n = n.next
+	}
+
+	return nil
+}
+
+func (l *List) Delete(key interface{}) {
+	n := l.get(key)
+
+	if n == nil {
+		return
+	}
+
+	if n.prev == nil && n.next == nil {
+		l.head = nil
+		l.tail = nil
+		return
+	}
+
+	if n.prev == nil {
+		l.head = n.next
+		n.next.prev = nil
+		return
+	}
+
+	if n.next == nil {
+		l.tail = n.prev
+		n.prev.next = nil
+		return
+	}
+
+	next := n.next
+	prev := n.prev
+
+	next.prev = prev
+	prev.next = next
+}
+
+func (l *List) Head() (key interface{}) {
+	if l.head == nil {
+		return nil
+	}
+
+	return l.head.key
+}
+
+func (l *List) All() {
+	n := l.head
+
+	if n == nil {
+		return
+	}
+
+	fmt.Printf("n: %s ", n.key)
+	for n.next != nil {
+		n = n.next
+		fmt.Printf("n: %s ", n.key)
+	}
+}
+
 type Value struct {
-	V          interface{}
-	Ttl        int
+	v interface{}
+
+	ttl        int
 	createTime time.Time
 }
 
-func NewValue(v interface{}) *Value {
+func NewValue(v interface{}, ttl int) *Value {
 	return &Value{
-		V:          v,
-		Ttl:        60 * 60 * 2,
+		v:          v,
+		ttl:        ttl,
 		createTime: time.Now(),
 	}
 }
 
 func (v *Value) expiration() time.Time {
-	return v.createTime.Add(time.Second * time.Duration(v.Ttl))
+	if v.ttl < 0 {
+		return v.createTime.Add(time.Second * time.Duration(999999999))
+	}
+
+	return v.createTime.Add(time.Second * time.Duration(v.ttl))
 }
 
 func (v *Value) IsExpired() bool {
 	return time.Now().After(v.expiration())
 }
 
-type KV struct {
-	m map[string]*Value
-	sync.RWMutex
+type Cache struct {
+	sync.Mutex
+	index *List
+	kv    map[string]*Value
+	len   int
+
+	gcChan chan interface{}
 }
 
-func New() *KV {
-	return &KV{
-		m: make(map[string]*Value),
+func New(len int) *Cache {
+	c := &Cache{
+		index: new(List),
+		kv:    make(map[string]*Value, len),
+		len:   len,
+
+		gcChan: make(chan interface{}, 100),
 	}
+
+	go func() {
+		for {
+			select {
+			case g := <-c.gcChan:
+				// TODO
+				log.Printf("gc: %v\n", g)
+			}
+		}
+	}()
+
+	return c
 }
 
-func (kv *KV) Get(k string) interface{} {
-	kv.RLock()
-	v, ok := kv.m[k]
-	kv.RUnlock()
+func (c *Cache) collect() {
+	k := c.index.Head()
+	c.index.Delete(k)
 
+	g := struct {
+		K string
+		V interface{}
+	}{K: k.(string), V: c.kv[k.(string)]}
+
+	delete(c.kv, k.(string))
+
+	c.gcChan <- g
+}
+
+func (c *Cache) reset(key string) {
+	c.index.Delete(key)
+	c.index.Insert(key)
+}
+
+func (c *Cache) delete(key string) {
+	c.index.Delete(key)
+	delete(c.kv, key)
+}
+
+func (c *Cache) Delete(key string) {
+	c.Lock()
+	defer c.Unlock()
+
+	c.delete(key)
+}
+
+func (c *Cache) put(key string, value interface{}, opts ...interface{}) {
+	ttl := -1
+
+	for i, opt := range opts {
+		switch i {
+		case 0:
+			ttl = opt.(int)
+		}
+	}
+
+	c.Lock()
+	defer c.Unlock()
+
+	if len(c.kv) == c.len {
+		c.collect()
+	}
+
+	c.kv[key] = NewValue(value, ttl)
+	c.index.Insert(key)
+}
+
+func (c *Cache) Put(key string, value interface{}, opts ...interface{}) {
+	c.put(key, value, opts...)
+}
+
+func (c *Cache) PutWithKey(value interface{}, opts ...interface{}) (key string) {
+	key = uuid.NewV4().String()
+
+	c.put(key, value, opts...)
+	return
+}
+
+func (c *Cache) Get(key string) interface{} {
+	c.Lock()
+	defer c.Unlock()
+
+	value, ok := c.kv[key]
 	if !ok {
 		return nil
 	}
 
-	if v.IsExpired() {
-		kv.Lock()
-		delete(kv.m, k)
-		kv.Unlock()
-
+	if value.IsExpired() {
+		c.delete(key)
 		return nil
 	}
 
-	return v.V
-}
-
-func (kv *KV) Put(k string, v interface{}, args ...interface{}) bool {
-	value := NewValue(v)
-	for i, v := range args {
-		switch i {
-		case 0:
-			ttl, ok := v.(int)
-			if !ok {
-				return false
-			}
-			value.Ttl = ttl
-		default:
-			return false
-		}
-	}
-
-	kv.Lock()
-	defer kv.Unlock()
-
-	kv.m[k] = value
-
-	return true
-}
-
-func (kv *KV) PutWithUuid(v interface{}, args ...interface{}) (key string, ok bool) {
-	value := NewValue(v)
-	for i, v := range args {
-		switch i {
-		case 0:
-			ttl, ok := v.(int)
-			if !ok {
-				return "", false
-			}
-			value.Ttl = ttl
-		default:
-			return "", false
-		}
-	}
-
-	key = uuid.NewV4().String()
-
-	kv.Lock()
-	defer kv.Unlock()
-
-	kv.m[key] = value
-
-	return key, true
+	c.reset(key)
+	return value.v
 }
