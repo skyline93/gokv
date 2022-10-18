@@ -2,10 +2,11 @@ package gokv
 
 import (
 	"fmt"
-	uuid "github.com/satori/go.uuid"
 	"log"
 	"sync"
 	"time"
+
+	uuid "github.com/satori/go.uuid"
 )
 
 type Node struct {
@@ -18,9 +19,17 @@ type Node struct {
 type List struct {
 	head *Node
 	tail *Node
+	mu   sync.RWMutex
 }
 
 func (l *List) Insert(key interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.insert(key)
+}
+
+func (l *List) insert(key interface{}) {
 	node := &Node{key: key}
 
 	if l.head == nil {
@@ -33,6 +42,13 @@ func (l *List) Insert(key interface{}) {
 	t.next = node
 	node.prev = t
 	l.tail = node
+}
+
+func (l *List) Get(key interface{}) *Node {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	return l.get(key)
 }
 
 func (l *List) get(key interface{}) *Node {
@@ -54,6 +70,9 @@ func (l *List) get(key interface{}) *Node {
 }
 
 func (l *List) Delete(key interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	n := l.get(key)
 
 	if n == nil {
@@ -86,6 +105,9 @@ func (l *List) Delete(key interface{}) {
 }
 
 func (l *List) Head() (key interface{}) {
+	l.mu.RLock()
+	defer l.mu.Unlock()
+
 	if l.head == nil {
 		return nil
 	}
