@@ -73,6 +73,10 @@ func (l *List) Delete(key interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	l.delete(key)
+}
+
+func (l *List) delete(key interface{}) {
 	n := l.get(key)
 
 	if n == nil {
@@ -102,6 +106,11 @@ func (l *List) Delete(key interface{}) {
 
 	next.prev = prev
 	prev.next = next
+}
+
+func (l *List) ReSet(key interface{}) {
+	l.delete(key)
+	l.insert(key)
 }
 
 func (l *List) Head() (key interface{}) {
@@ -157,12 +166,14 @@ func (v *Value) IsExpired() bool {
 }
 
 type Cache struct {
-	sync.Mutex
+	mu    sync.Mutex
 	index *List
 	kv    map[string]*Value
 	len   int
 
-	gcChan chan interface{}
+	gcChan       chan interface{}
+	delExpirChan chan string
+	resetChan    chan string
 }
 
 func New(len int) *Cache {
@@ -171,7 +182,9 @@ func New(len int) *Cache {
 		kv:    make(map[string]*Value, len),
 		len:   len,
 
-		gcChan: make(chan interface{}, 100),
+		gcChan:       make(chan interface{}, 100),
+		delExpirChan: make(chan string, 100),
+		resetChan:    make(chan string, 100),
 	}
 
 	go func() {
@@ -180,6 +193,11 @@ func New(len int) *Cache {
 			case g := <-c.gcChan:
 				// TODO
 				log.Printf("gc: %v\n", g)
+			case key := <-c.delExpirChan:
+				log.Printf("delete expired key: %v\n", key)
+				c.Delete(key)
+			case key := <-c.resetChan:
+				c.index.ReSet(key)
 			}
 		}
 	}()
@@ -191,19 +209,9 @@ func (c *Cache) collect() {
 	k := c.index.Head()
 	c.index.Delete(k)
 
-	g := struct {
-		K string
-		V interface{}
-	}{K: k.(string), V: c.kv[k.(string)]}
-
 	delete(c.kv, k.(string))
 
-	c.gcChan <- g
-}
-
-func (c *Cache) reset(key string) {
-	c.index.Delete(key)
-	c.index.Insert(key)
+	c.gcChan <- k
 }
 
 func (c *Cache) delete(key string) {
@@ -212,13 +220,13 @@ func (c *Cache) delete(key string) {
 }
 
 func (c *Cache) Delete(key string) {
-	c.Lock()
-	defer c.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	c.delete(key)
 }
 
-func (c *Cache) put(key string, value interface{}, opts ...interface{}) {
+func (c *Cache) set(key string, value interface{}, opts ...interface{}) {
 	ttl := -1
 
 	for i, opt := range opts {
@@ -227,9 +235,6 @@ func (c *Cache) put(key string, value interface{}, opts ...interface{}) {
 			ttl = opt.(int)
 		}
 	}
-
-	c.Lock()
-	defer c.Unlock()
 
 	if len(c.kv) == c.len {
 		c.collect()
@@ -240,19 +245,25 @@ func (c *Cache) put(key string, value interface{}, opts ...interface{}) {
 }
 
 func (c *Cache) Put(key string, value interface{}, opts ...interface{}) {
-	c.put(key, value, opts...)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.set(key, value, opts...)
 }
 
 func (c *Cache) PutWithKey(value interface{}, opts ...interface{}) (key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	key = uuid.NewV4().String()
 
-	c.put(key, value, opts...)
+	c.set(key, value, opts...)
 	return
 }
 
 func (c *Cache) Get(key string) interface{} {
-	c.Lock()
-	defer c.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	value, ok := c.kv[key]
 	if !ok {
@@ -260,10 +271,10 @@ func (c *Cache) Get(key string) interface{} {
 	}
 
 	if value.IsExpired() {
-		c.delete(key)
+		c.delExpirChan <- key
 		return nil
 	}
 
-	c.reset(key)
+	c.resetChan <- key
 	return value.v
 }
